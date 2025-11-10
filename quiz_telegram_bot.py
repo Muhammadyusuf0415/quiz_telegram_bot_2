@@ -7,9 +7,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # === Sozlamalar ===
 CSV_FILE = "ITT_Quizizz_Import.csv"
-TIME_LIMIT = 23     # Har bir savol uchun vaqt (soniya)
+TIME_LIMIT = 20     # Har bir savol uchun vaqt (soniya)
 MAX_QUESTIONS = 25   # Testdagi savollar soni
-PAUSE_AFTER_RESULT = 7  # Natija chiqqandan keyingi pauza
+PAUSE_AFTER_RESULT = 5  # Natija chiqqandan keyingi pauza
 
 # === Savollarni yuklash ===
 def load_questions(filename):
@@ -220,3 +220,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
