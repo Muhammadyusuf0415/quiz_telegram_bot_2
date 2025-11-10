@@ -211,7 +211,7 @@ async def show_results(context, chat_id):
 
 # === Asosiy ===
 def main():
-    TOKEN = "8555858502:AAFSK7A75WakZKqqtAtsgxphg2_bDNe_WEE"
+    TOKEN = "8589106324:AAGJ3Xzbzf6mIO4nbURUER2mNLosoop8q5g"
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(answer))
@@ -220,4 +220,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
