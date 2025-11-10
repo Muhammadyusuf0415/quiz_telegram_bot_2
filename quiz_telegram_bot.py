@@ -1,15 +1,15 @@
 import csv
 import asyncio
 import random
-from collections import defaultdict, Counter
+from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # === Sozlamalar ===
 CSV_FILE = "ITT_Quizizz_Import.csv"
-TIME_LIMIT = 20     # Har bir savol uchun vaqt (soniya)
-MAX_QUESTIONS = 25   # Testdagi savollar soni
-PAUSE_AFTER_RESULT = 5  # Natija chiqqandan keyingi pauza
+TIME_LIMIT = 20        # Har bir savol uchun vaqt (soniya)
+MAX_QUESTIONS = 25     # Testdagi savollar soni
+PAUSE_AFTER_RESULT = 5 # Natija chiqqandan keyingi pauza
 
 # === Savollarni yuklash ===
 def load_questions(filename):
@@ -35,20 +35,53 @@ QUESTIONS = load_questions(CSV_FILE)
 CURRENT_INDEX = {}
 SCORES = defaultdict(lambda: defaultdict(int))
 ACTIVE = {}
+STOPPED = set()  # To‘xtatilgan chatlar ro‘yxati
 
 
 # === /start komandasi ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # Agar test allaqachon boshlangan bo‘lsa
+    if chat_id in ACTIVE:
+        await update.message.reply_text("⚠️ Test allaqachon davom etmoqda. Agar to‘xtatmoqchi bo‘lsangiz /stop deb yozing.")
+        return
+
+    STOPPED.discard(chat_id)
     CURRENT_INDEX[chat_id] = 0
     SCORES[chat_id].clear()
     random.shuffle(QUESTIONS)
-    await update.message.reply_text("🎯 Test boshlandi! Har kim tugmani bosib javob bering!")
+
+    await update.message.reply_text("🎯 Test boshlandi!")
+    await send_question(context, chat_id)
+
+
+# === /stop komandasi ===
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    STOPPED.add(chat_id)
+    ACTIVE.pop(chat_id, None)
+    await update.message.reply_text("🛑 Test to‘xtatildi. Qayta boshlash uchun /restart deb yozing.")
+
+
+# === /restart komandasi ===
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    STOPPED.discard(chat_id)
+    CURRENT_INDEX[chat_id] = 0
+    SCORES[chat_id].clear()
+    ACTIVE.pop(chat_id, None)
+    random.shuffle(QUESTIONS)
+
+    await update.message.reply_text("🔁 Test qayta boshlandi!")
     await send_question(context, chat_id)
 
 
 # === Savol yuborish ===
 async def send_question(context, chat_id):
+    if chat_id in STOPPED:
+        return
+
     idx = CURRENT_INDEX.get(chat_id, 0)
     if idx >= min(len(QUESTIONS), MAX_QUESTIONS):
         await show_results(context, chat_id)
@@ -86,6 +119,10 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     user_name = user.first_name or "Foydalanuvchi"
 
+    if chat_id in STOPPED:
+        await query.answer("🛑 Test to‘xtatilgan.", show_alert=True)
+        return
+
     data = query.data
     try:
         parts = data[1:].split(":")
@@ -111,10 +148,12 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active["answers"][user_id] = (user_name, chosen_text)
 
 
-# === Timer (har 2 soniyada yangilanadigan countdown + natija + 7s pauza) ===
+# === Timer (faqat to‘g‘ri javob chiqadi, uzun matn to‘liq ko‘rinadi) ===
 async def question_timer(context, chat_id, message_id, seconds):
-    for remaining in range(seconds - 1, 0, -2):  # Har 2 soniyada bir marta yangilanadi
+    for remaining in range(seconds - 1, 0, -2):
         await asyncio.sleep(2)
+        if chat_id in STOPPED:
+            return
         active = ACTIVE.get(chat_id)
         if not active or active["msg_id"] != message_id:
             return
@@ -133,66 +172,45 @@ async def question_timer(context, chat_id, message_id, seconds):
         except:
             pass
 
-    # Vaqt tugadi — natija chiqadi
+    if chat_id in STOPPED:
+        return
+
     active = ACTIVE.get(chat_id)
     if not active or active["msg_id"] != message_id:
         return
 
     q = QUESTIONS[active["q_index"]]
     correct = q["correct"]
-    answers = active["answers"]
 
-    all_chosen = [ans[1] for ans in answers.values()]
-    count = Counter(all_chosen)
-    total = len(all_chosen)
+    result_text = f"⏰ *Vaqt tugadi!*\n\n✅ To‘g‘ri javob:\n\n*{correct}*"
 
-    correct_users = []
-    wrong_users = []
-    for uid, (name, choice) in answers.items():
-        if choice == correct:
-            correct_users.append(name)
-            SCORES[chat_id][uid] += 1
-        else:
-            wrong_users.append(f"{name} ({choice})")
+    MAX_LEN = 4000
+    if len(result_text) > MAX_LEN:
+        parts = [result_text[i:i+MAX_LEN] for i in range(0, len(result_text), MAX_LEN)]
+        for part in parts:
+            await context.bot.send_message(chat_id=chat_id, text=part, parse_mode="Markdown")
+    else:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=result_text, parse_mode="Markdown"
+            )
+        except:
+            await context.bot.send_message(chat_id=chat_id, text=result_text, parse_mode="Markdown")
 
-    # 📊 Natija matni
-    result_text = (
-        f"⏰ *Vaqt tugadi!*\n\n"
-        f"✅ To‘g‘ri javob: *{correct}*\n\n"
-        f"👥 Jami qatnashchilar: {total}\n\n"
-        f"📊 *Variantlar bo‘yicha tanlov:*\n"
-    )
-    for opt in active["options"]:
-        cnt = count.get(opt, 0)
-        percent = round((cnt / total * 100), 1) if total > 0 else 0
-        result_text += f"{opt} — {cnt} ta ({percent}%)\n"
-    result_text += "\n"
-
-    if correct_users:
-        result_text += "✅ To‘g‘ri javob berganlar:\n" + ", ".join(correct_users) + "\n\n"
-    if wrong_users:
-        result_text += "❌ Noto‘g‘ri javoblar:\n" + "\n".join(wrong_users) + "\n"
-
-    try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id, text=result_text, parse_mode="Markdown"
-        )
-    except:
-        pass
-
-    # 7 soniya pauza (foydalanuvchi natijani o‘qisin)
     await asyncio.sleep(PAUSE_AFTER_RESULT)
+    if chat_id in STOPPED:
+        return
 
     ACTIVE.pop(chat_id, None)
     CURRENT_INDEX[chat_id] += 1
     await send_question(context, chat_id)
 
 
-# === Yakuniy natija (Leaderboard) ===
+# === Yakuniy natija ===
 async def show_results(context, chat_id):
     scores = SCORES.get(chat_id, {})
     if not scores:
-        await context.bot.send_message(chat_id=chat_id, text="hech kim to'g'ri javob bermadi")
+        await context.bot.send_message(chat_id=chat_id, text="Hech kim to‘g‘ri javob bermadi.")
         return
 
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -214,11 +232,11 @@ def main():
     TOKEN = "8589106324:AAGJ3Xzbzf6mIO4nbURUER2mNLosoop8q5g"
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("restart", restart))
     app.add_handler(CallbackQueryHandler(answer))
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
-
